@@ -7,12 +7,17 @@ from app.store import store
 
 MODULE = "sample"
 REQUIRED_FIELDS = ["样品编号", "样品名称", "样品类别"]
+ENTRY_FIELDS = ["样品编号", "样品名称", "样品类别", "送检单位", "送检人", "接收日期", "保存条件"]
 STATUS_ORDER = ["待受理", "已受理", "已分发", "已退回"]
+PENDING_STATUSES = {"待受理", "已受理"}
 ACTION_RULES = {"受理样品": "已受理", "分发检测": "已分发", "退回样品": "已退回"}
-NEGATIVE_ACTIONS = []
+NEGATIVE_ACTIONS = ["退回样品"]
 
 
 class SampleService:
+    def __init__(self) -> None:
+        self._normalize_rows()
+
     def list_entries(
         self,
         *,
@@ -33,18 +38,30 @@ class SampleService:
     def get_entry(self, entry_id: int) -> dict[str, Any] | None:
         return store.find(MODULE, entry_id)
 
-    def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+    def stats(self) -> list[dict[str, Any]]:
+        """统计卡片与列表同源：待处理看 pending，分发量看状态，刷新后口径一致。"""
+        rows = store.rows(MODULE)
+        return [
+            {"label": "今日受理样品", "value": len(rows)},
+            {"label": "待受理样品", "value": sum(1 for row in rows if row.get("pending"))},
+            {"label": "已分发样品", "value": sum(1 for row in rows if row.get("status") == "已分发")},
+        ]
+
+    def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str], str]:
         missing = [field for field in REQUIRED_FIELDS if not str(values.get(field) or "").strip()]
         if missing:
-            return None, missing
+            return None, missing, ""
+        code = str(values.get("样品编号") or "").strip()
         rows = store.rows(MODULE)
+        if any(str(row.get("样品编号") or "").strip() == code for row in rows):
+            return None, [], f"样品编号 {code} 已登记，重复提交已被忽略"
         entry = {"id": max((int(row.get("id", 0)) for row in rows), default=0) + 1}
-        entry.update({field: values.get(field) for field in REQUIRED_FIELDS})
+        entry.update({field: values.get(field) for field in ENTRY_FIELDS})
         entry["status"] = STATUS_ORDER[0]
-        entry["pending"] = True
         entry["abnormal"] = False
+        self._sync_state(entry)
         rows.append(entry)
-        return entry, []
+        return entry, [], ""
 
     def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
         entry = store.find(MODULE, entry_id)
@@ -55,7 +72,27 @@ class SampleService:
         target = ACTION_RULES[action]
         if target not in STATUS_ORDER:
             return None, f"目标状态「{target}」不在允许的状态序列里"
+        current = str(entry.get("status") or STATUS_ORDER[0])
+        if current not in STATUS_ORDER:
+            current = STATUS_ORDER[0]
+        if STATUS_ORDER.index(target) < STATUS_ORDER.index(current):
+            return None, f"样品当前状态为「{current}」，不能回退到「{target}」"
         entry["status"] = target
-        entry["pending"] = target != STATUS_ORDER[-1]
-        entry["abnormal"] = action in NEGATIVE_ACTIONS
+        entry["abnormal"] = bool(entry.get("abnormal")) or action in NEGATIVE_ACTIONS
+        self._sync_state(entry)
         return entry, f"样品已{action}"
+
+    @staticmethod
+    def _sync_state(entry: dict[str, Any]) -> None:
+        """状态、展示字段与待处理标记同源更新，列表、详情、卡片不再各说各话。"""
+        status = str(entry.get("status") or STATUS_ORDER[0])
+        entry["status"] = status
+        entry["样品状态"] = status
+        entry["pending"] = status in PENDING_STATUSES
+
+    @classmethod
+    def _normalize_rows(cls) -> None:
+        """历史数据只重算派生字段（展示状态、待处理），不改写异常标记等既有事实。"""
+        for row in store.rows(MODULE):
+            cls._sync_state(row)
+            row["abnormal"] = bool(row.get("abnormal"))

@@ -73,7 +73,11 @@ const ENDPOINT = '/api/sample'
 const columns = ["样品编号", "样品名称", "样品类别", "送检单位", "送检人", "接收日期", "保存条件", "样品状态"]
 const actions = ["受理样品", "分发检测", "退回样品"]
 const statuses = ["待受理", "已受理", "已分发", "已退回"]
-const stats = [{"label": "今日受理样品", "value": 0}, {"label": "待受理样品", "value": 0}, {"label": "已分发样品", "value": 0}]
+const stats = ref<{ label: string; value: number }[]>([
+  { label: '今日受理样品', value: 0 },
+  { label: '待受理样品', value: 0 },
+  { label: '已分发样品', value: 0 },
+])
 
 const rows = ref<Row[]>([])
 const total = ref(0)
@@ -101,8 +105,9 @@ async function runAction(action: string, row: Row) {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('样品受理动作未生效，请稍后重试')
+    const payload = (await response.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '样品受理动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -114,13 +119,19 @@ async function reload() {
   errorMessage.value = ''
   const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
+    const [listResponse, statsResponse] = await Promise.all([
+      request(`${ENDPOINT}?${query}`),
+      request(`${ENDPOINT}/stats`),
+    ])
+    if (!listResponse.ok) {
       throw new Error('样品列表读取失败')
     }
-    const payload = await response.json()
+    const payload = await listResponse.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    if (statsResponse.ok) {
+      stats.value = await statsResponse.json()
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '样品受理列表读取失败'
   }

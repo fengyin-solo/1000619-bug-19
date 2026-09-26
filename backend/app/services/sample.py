@@ -7,9 +7,11 @@ from app.store import store
 
 MODULE = "sample"
 REQUIRED_FIELDS = ["样品编号", "样品名称", "样品类别"]
+LIST_FIELDS = ["样品编号", "样品名称", "样品类别", "送检单位", "送检人", "接收日期", "保存条件"]
 STATUS_ORDER = ["待受理", "已受理", "已分发", "已退回"]
+PENDING_STATUSES = {"待受理", "已受理"}
 ACTION_RULES = {"受理样品": "已受理", "分发检测": "已分发", "退回样品": "已退回"}
-NEGATIVE_ACTIONS = []
+NEGATIVE_ACTIONS = ["退回样品"]
 
 
 class SampleService:
@@ -37,10 +39,16 @@ class SampleService:
         missing = [field for field in REQUIRED_FIELDS if not str(values.get(field) or "").strip()]
         if missing:
             return None, missing
+        code = str(values.get("样品编号") or "").strip()
         rows = store.rows(MODULE)
+        for row in rows:
+            if str(row.get("样品编号") or "").strip() == code:
+                # 同一编号重复登记：返回原记录，不新增行、不覆盖已填字段
+                return row, []
         entry = {"id": max((int(row.get("id", 0)) for row in rows), default=0) + 1}
-        entry.update({field: values.get(field) for field in REQUIRED_FIELDS})
+        entry.update({field: values.get(field) for field in LIST_FIELDS})
         entry["status"] = STATUS_ORDER[0]
+        entry["样品状态"] = STATUS_ORDER[0]
         entry["pending"] = True
         entry["abnormal"] = False
         rows.append(entry)
@@ -56,6 +64,9 @@ class SampleService:
         if target not in STATUS_ORDER:
             return None, f"目标状态「{target}」不在允许的状态序列里"
         entry["status"] = target
-        entry["pending"] = target != STATUS_ORDER[-1]
-        entry["abnormal"] = action in NEGATIVE_ACTIONS
+        entry["样品状态"] = target
+        entry["pending"] = target in PENDING_STATUSES
+        if action in NEGATIVE_ACTIONS:
+            # 退回计入异常且只增不清，后续动作不能把异常标记冲掉
+            entry["abnormal"] = True
         return entry, f"样品已{action}"

@@ -73,13 +73,16 @@ const ENDPOINT = '/api/sample'
 const columns = ["样品编号", "样品名称", "样品类别", "送检单位", "送检人", "接收日期", "保存条件", "样品状态"]
 const actions = ["受理样品", "分发检测", "退回样品"]
 const statuses = ["待受理", "已受理", "已分发", "已退回"]
-const stats = [{"label": "今日受理样品", "value": 0}, {"label": "待受理样品", "value": 0}, {"label": "已分发样品", "value": 0}]
-
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+const stats = ref([
+  { label: '今日受理样品', value: 0 },
+  { label: '待受理样品', value: 0 },
+  { label: '已分发样品', value: 0 },
+])
 
 function resetFilters() {
   filters.value = {}
@@ -114,13 +117,26 @@ async function reload() {
   errorMessage.value = ''
   const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
+    // 列表走当前筛选条件，统计卡片始终按全量样品计算，保证两边对得上
+    const [listResponse, statsResponse] = await Promise.all([
+      request(`${ENDPOINT}?${query}`),
+      request(`${ENDPOINT}?size=200`),
+    ])
+    if (!listResponse.ok) {
       throw new Error('样品列表读取失败')
     }
-    const payload = await response.json()
+    const payload = await listResponse.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    if (statsResponse.ok) {
+      const all: Row[] = (await statsResponse.json()).items ?? []
+      const today = new Date().toISOString().slice(0, 10)
+      stats.value = [
+        { label: '今日受理样品', value: all.filter((row) => row['接收日期'] === today).length },
+        { label: '待受理样品', value: all.filter((row) => row.status === statuses[0]).length },
+        { label: '已分发样品', value: all.filter((row) => row.status === statuses[2]).length },
+      ]
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '样品受理列表读取失败'
   }
